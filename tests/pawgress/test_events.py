@@ -76,3 +76,28 @@ def test_control_message_rejects_unknown_keys():
 def test_criterion_rejects_unknown_keys():
     with pytest.raises(ValidationError):
         Criterion.model_validate({"label": "x", "mystery": True})
+
+
+def test_island_state_context_usage_roundtrip():
+    state = IslandState(
+        goal="g",
+        state=IslandStatus.WORKING,
+        context_tokens=14_000,
+        context_max=200_000,
+        usage_used=170_000,
+        usage_limit=500_000,
+        usage_reset_seconds=40,
+    )
+    parsed = parse_island_state(encode_jsonl(state))
+    assert parsed.context_tokens == 14_000
+    assert parsed.context_max == 200_000
+    assert parsed.usage_used == 170_000
+    assert parsed.usage_limit == 500_000
+    assert parsed.usage_reset_seconds == 40
+
+
+def test_island_state_old_lines_without_new_fields_still_parse():
+    line = '{"type": "island_state", "goal": "g", "state": "working"}'
+    parsed = parse_island_state(line)
+    assert parsed.context_tokens is None
+    assert parsed.usage_limit is None

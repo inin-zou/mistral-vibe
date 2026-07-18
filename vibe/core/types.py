@@ -59,6 +59,10 @@ class AgentStats(BaseModel):
 
     context_tokens: int = 0
 
+    rate_limit_tokens_limit: int = 0
+    rate_limit_tokens_remaining: int = 0
+    rate_limit_captured_at: float = 0.0
+
     last_turn_prompt_tokens: int = 0
     last_turn_completion_tokens: int = 0
     last_turn_duration: float = 0.0
@@ -440,11 +444,19 @@ class StopInfo(BaseModel):
         return self.reason == StopReason.REFUSAL
 
 
+class RateLimitInfo(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    limit_tokens: int
+    remaining_tokens: int
+
+
 class LLMChunk(BaseModel):
     model_config = ConfigDict(frozen=True)
     message: LLMMessage
     usage: LLMUsage | None = None
     correlation_id: str | None = None
+    rate_limit: RateLimitInfo | None = None
     stop: StopInfo | None = None
 
     def __add__(self, other: LLMChunk) -> LLMChunk:
@@ -456,6 +468,7 @@ class LLMChunk(BaseModel):
             message=self.message + other.message,
             usage=new_usage,
             correlation_id=other.correlation_id or self.correlation_id,
+            rate_limit=other.rate_limit or self.rate_limit,
             stop=other.stop or self.stop,
         )
 

@@ -64,6 +64,7 @@ _MARGIN_BOTTOM = 9
 _SPACING = 7
 _BORDER = 2
 _DRAG_THRESHOLD_PX = 8
+TICK_SECONDS = 0.16
 
 
 class IslandWindow(QWidget):
@@ -85,6 +86,7 @@ class IslandWindow(QWidget):
         self._drag_offset: QPoint | None = None
         self._control_path = control_path
         self._ticks = 0
+        self._state_ticks = 0
         self._user_moved = False
         self._user_resized = False
         self._programmatic_resize = False
@@ -139,6 +141,7 @@ class IslandWindow(QWidget):
 
     def update_state(self, state: IslandState) -> None:
         self._state = state
+        self._state_ticks = self._ticks
         self._render()
         self._resize()
         make_visible_on_all_spaces(self)
@@ -175,7 +178,11 @@ class IslandWindow(QWidget):
             return
         self._label.setText(
             render_island_html(
-                self._state, self._cat.current_frame(), self._ticks, with_buttons=False
+                self._state,
+                self._cat.current_frame(),
+                self._ticks,
+                with_buttons=False,
+                age_seconds=int((self._ticks - self._state_ticks) * TICK_SECONDS),
             )
         )
         self._buttons.setText(buttons_html(self._state))

@@ -46,6 +46,11 @@ class IslandState(BaseModel):
     elapsed: str | None = None
     cost: float | None = None
     budget: float | None = None
+    context_tokens: int | None = None
+    context_max: int | None = None
+    usage_used: int | None = None
+    usage_limit: int | None = None
+    usage_reset_seconds: int | None = None
     evidence: list[str] = Field(default_factory=list)
     request_id: str | None = None
 
