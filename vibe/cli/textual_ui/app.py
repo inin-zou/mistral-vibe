@@ -41,7 +41,7 @@ from vibe.cli.narrator_manager.narrator_manager_port import (
     NarratorManagerPort,
     NarratorState,
 )
-from vibe.cli.pawgress import PawgressSink
+from vibe.cli.pawgress import PawgressSink, launch_overlay
 from vibe.cli.plan_offer.adapters.http_whoami_gateway import HttpWhoAmIGateway
 from vibe.cli.plan_offer.decide_plan_offer import (
     PlanInfo,
@@ -189,7 +189,7 @@ from vibe.core.hooks.models import HookStartEvent
 from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
-from vibe.core.pawgress import Goal, GoalController
+from vibe.core.pawgress import ControlAction, Goal, GoalController, parse_control
 from vibe.core.rewind import RewindError
 from vibe.core.sentry import capture_sentry_exception
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
@@ -472,6 +472,8 @@ class VibeApp(App):  # noqa: PLR0904
 
     _pawgress: GoalController | None = None
     _pawgress_sink_cache: PawgressSink | None = None
+    _pawgress_control_pos: int = 0
+    _pawgress_control_started: bool = False
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "interrupt_or_quit", "Quit", show=False),
@@ -3375,7 +3377,10 @@ class VibeApp(App):  # noqa: PLR0904
         controller = GoalController(goal, cwd=str(Path.cwd()))
         self._pawgress = controller
         await self._persist_pawgress_goal()
+        self._pawgress_sink.reset()
         self._pawgress_sink.write(controller.island_state(detail="Goal set"))
+        launch_overlay(self._pawgress_sink.path)
+        self._start_pawgress_control_watch()
         self._update_pawgress_status()
         await self._mount_and_scroll(
             WarningMessage(f"🐾 Pawgress goal set: {description}")
@@ -3479,6 +3484,51 @@ class VibeApp(App):  # noqa: PLR0904
             return
         widget.update(self._pawgress.status_line())
         widget.display = True
+
+    @property
+    def _pawgress_control_path(self) -> Path:
+        return self._pawgress_sink.path.parent / "pawgress-control.jsonl"
+
+    def _start_pawgress_control_watch(self) -> None:
+        try:
+            self._pawgress_control_path.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+        self._pawgress_control_pos = 0
+        if not self._pawgress_control_started:
+            self.set_interval(0.3, self._poll_pawgress_control)
+            self._pawgress_control_started = True
+
+    def _poll_pawgress_control(self) -> None:
+        controller = self._pawgress
+        if controller is None:
+            return
+        path = self._pawgress_control_path
+        if not path.exists():
+            return
+        if path.stat().st_size < self._pawgress_control_pos:
+            self._pawgress_control_pos = 0
+        changed = False
+        with path.open("r", encoding="utf-8") as fh:
+            fh.seek(self._pawgress_control_pos)
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    message = parse_control(stripped)
+                except ValueError:
+                    continue
+                if message.action is ControlAction.PAUSE:
+                    controller.pause()
+                    changed = True
+                elif message.action is ControlAction.STOP:
+                    controller.stop()
+                    changed = True
+            self._pawgress_control_pos = fh.tell()
+        if changed:
+            self._update_pawgress_status()
+            self._pawgress_sink.write(controller.island_state())
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:

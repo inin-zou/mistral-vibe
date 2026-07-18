@@ -15,6 +15,13 @@ class PawgressSink:
     def path(self) -> Path:
         return self._path
 
+    def reset(self) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text("", encoding="utf-8")
+        except OSError as e:
+            logger.warning("Failed to reset pawgress sink %s: %s", self._path, e)
+
     def write(self, state: IslandState) -> None:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
