@@ -17,6 +17,7 @@ class IslandStatus(StrEnum):
 
 class ControlAction(StrEnum):
     PAUSE = auto()
+    RESUME = auto()
     STOP = auto()
     FOCUS_VIBE = auto()
 

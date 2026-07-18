@@ -5,11 +5,12 @@ from pathlib import Path
 import signal
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from vibe.core.paths import VIBE_HOME
 from vibe.overlay.hotkey import HotkeyBridge, install_toggle_hotkey
-from vibe.overlay.macos import make_visible_on_all_spaces
+from vibe.overlay.macos import hide_dock_icon, make_visible_on_all_spaces
 from vibe.overlay.reader import FileTailReader, StdinReader
 from vibe.overlay.window import IslandWindow
 
@@ -29,6 +30,8 @@ def main() -> None:
     window = IslandWindow(control_path=Path(args.control_file))
     window.show()
     make_visible_on_all_spaces(window)
+    hide_dock_icon()
+    QTimer.singleShot(200, hide_dock_icon)
 
     if args.file is not None:
         tail = FileTailReader(Path(args.file))

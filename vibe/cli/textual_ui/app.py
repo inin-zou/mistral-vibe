@@ -3522,6 +3522,10 @@ class VibeApp(App):  # noqa: PLR0904
                 if message.action is ControlAction.PAUSE:
                     controller.pause()
                     changed = True
+                elif message.action is ControlAction.RESUME:
+                    controller.resume()
+                    changed = True
+                    self.call_later(self._resume_pawgress_goal)
                 elif message.action is ControlAction.STOP:
                     controller.stop()
                     changed = True
@@ -3529,6 +3533,15 @@ class VibeApp(App):  # noqa: PLR0904
         if changed:
             self._update_pawgress_status()
             self._pawgress_sink.write(controller.island_state())
+
+    async def _resume_pawgress_goal(self) -> None:
+        controller = self._pawgress
+        if controller is None or controller.goal.completed:
+            return
+        await self._queue.enqueue_prompt(
+            f"Continue working on the goal: {controller.goal.description}"
+        )
+        self._queue.start_drain_if_needed()
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:

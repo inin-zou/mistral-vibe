@@ -110,8 +110,17 @@ def render_collapsed(state: IslandState) -> str:
     return f"\U0001f43e Pawgress · {label}{tail}{sym}"
 
 
+EMPTY_BAR = "#3d3d42"
+
+
 def _span(text: str, color: str) -> str:
-    return f'<span style="color:{color}">{html.escape(text)}</span>'
+    escaped = html.escape(text).replace(" ", "&nbsp;")
+    return f'<span style="color:{color}">{escaped}</span>'
+
+
+def _bar_html(current: int, total: int, color: str, width: int = 10) -> str:
+    filled = 0 if total <= 0 else min(width, round(width * current / total))
+    return _span("█" * filled, color) + _span("█" * (width - filled), EMPTY_BAR)
 
 
 _DECOR_FRAMES: dict[IslandStatus, tuple[str, ...]] = {
@@ -120,7 +129,7 @@ _DECOR_FRAMES: dict[IslandStatus, tuple[str, ...]] = {
     IslandStatus.WAITING: ("!", " "),
     IslandStatus.BLOCKED: ("✗",),
     IslandStatus.PAUSED: ("zZ", "z "),
-    IslandStatus.COMPLETED: ("+ ✦ +", " ✦✦ "),
+    IslandStatus.COMPLETED: ("+ ✦ +", " ✦✦  "),
 }
 _RETRY_FRAMES = ("↻", "⟳")
 
@@ -141,7 +150,9 @@ def _decoration(state: IslandState, tick: int) -> str:
     return frames[(tick // 3) % len(frames)]
 
 
-def render_island_html(state: IslandState, cat_frame: str, tick: int = 0) -> str:
+def render_island_html(
+    state: IslandState, cat_frame: str, tick: int = 0, with_buttons: bool = True
+) -> str:
     label, symbol, color = _STATE_STYLE[state.state]
     if _is_retrying(state):
         label, color = "trying another fix", BLUE
@@ -149,19 +160,26 @@ def render_island_html(state: IslandState, cat_frame: str, tick: int = 0) -> str
     head = f"\U0001f43e Pawgress · {label}"
     if symbol:
         head += f"  {symbol}"
-    rows.append(_span(head, color) + "  " + _button("[×]", "quit", MUTED))
+    rows.append(_span(head, color) + _span("  ", FG) + _button("[×]", "quit", MUTED))
+    rows.append(_span(" ", FG))
     rows.append(_span(state.goal, FG))
+    rows.append(_span(" ", FG))
 
     frac = _verification_fraction(state)
     bar = ""
     if frac is not None:
-        bar = "   " + _span(f"{progress_bar(*frac)} {frac[0]}/{frac[1]}", color)
+        bar = (
+            _span("   ", FG)
+            + _bar_html(frac[0], frac[1], color)
+            + _span(f" {frac[0]}/{frac[1]}", color)
+        )
     cat_lines = cat_frame.splitlines() or [""]
     mid = len(cat_lines) // 2
-    decor = "  " + _span(_decoration(state, tick), color)
+    decor = _span("  ", FG) + _span(_decoration(state, tick), color)
     for i, cat_line in enumerate(cat_lines):
         suffix = bar if i == mid else (decor if i == 0 else "")
         rows.append(_span(f" {cat_line}", ORANGE) + suffix)
+    rows.append(_span(" ", FG))
 
     for criterion in state.criteria:
         marker = _criterion_marker(criterion)
@@ -185,7 +203,8 @@ def render_island_html(state: IslandState, cat_frame: str, tick: int = 0) -> str
         for item in state.evidence:
             rows.append(_span(f"✓ {item}", GREEN))
 
-    rows.append(_buttons_html(state))
+    if with_buttons:
+        rows.append(buttons_html(state))
     return "<br>".join(rows)
 
 
@@ -193,11 +212,19 @@ def _button(label: str, href: str, color: str) -> str:
     return f'<a href="{href}" style="color:{color};text-decoration:none">{html.escape(label)}</a>'
 
 
-def _buttons_html(state: IslandState) -> str:
+_BUTTON_GAP = "&nbsp;" * 4
+
+
+def buttons_html(state: IslandState) -> str:
     if state.state is IslandStatus.WAITING:
         return _button("[Open Vibe]", "focus_vibe", BLUE)
-    return " ".join([
-        _button("[Pause]", "pause", MUTED),
+    first = (
+        _button("[Resume]", "resume", GREEN)
+        if state.state is IslandStatus.PAUSED
+        else _button("[Pause]", "pause", MUTED)
+    )
+    return _BUTTON_GAP.join([
+        first,
         _button("[Stop]", "stop", RED),
         _button("[Open Vibe]", "focus_vibe", BLUE),
     ])
