@@ -199,7 +199,8 @@ venv = ".venv"
 
 [tool.ruff]
 include = ["vibe/**/*.py", "tests/**/*.py"]
-exclude = ["pyinstaller/"]
+exclude = ["pyinstaller/", "demo", "stub_feed.py"]
+force-exclude = true
 line-length = 88
 target-version = "py312"
 preview = true

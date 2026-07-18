@@ -29,6 +29,7 @@ from pydantic import (
 )
 
 from vibe.core.experiments.models import EvalResponse
+from vibe.core.pawgress.goal import Goal
 
 
 class ScheduledLoop(BaseModel):
@@ -162,6 +163,7 @@ class SessionMetadata(BaseModel):
     title: str | None = None
     title_source: Literal["auto", "manual"] = "auto"
     experiments: EvalResponse | None = None
+    goal: Goal | None = None
 
 
 StrToolChoice = Literal["auto", "none", "any", "required"]
