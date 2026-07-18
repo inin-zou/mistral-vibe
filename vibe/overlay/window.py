@@ -46,15 +46,15 @@ _STYLE = """
 }
 QLabel {
     font-family: 'Menlo', 'Monaco', monospace;
-    font-size: 14px;
+    font-size: 13px;
     color: #e6e6e6;
 }
 """
 
-_MARGIN_SIDE = 18
-_MARGIN_TOP = 14
-_MARGIN_BOTTOM = 10
-_SPACING = 8
+_MARGIN_SIDE = 16
+_MARGIN_TOP = 12
+_MARGIN_BOTTOM = 9
+_SPACING = 7
 _BORDER = 2
 
 
@@ -118,7 +118,7 @@ class IslandWindow(QWidget):
 
         self._grip = QSizeGrip(self)
         self._grip.resize(16, 16)
-        self.setMinimumSize(260, 150)
+        self.setMinimumSize(240, 140)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
