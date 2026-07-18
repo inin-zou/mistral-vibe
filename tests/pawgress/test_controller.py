@@ -128,3 +128,27 @@ def test_status_line_reports_working_verifying_and_complete_states():
     done = make_goal()
     done.completed = True
     assert GoalController(done).status_line() == "🐾 Pawgress · complete"
+
+
+def test_island_state_passes_context_and_usage_through():
+    controller = GoalController(make_goal())
+
+    state = controller.island_state(
+        context_tokens=14_000,
+        context_max=200_000,
+        usage_used=170_000,
+        usage_limit=500_000,
+        usage_reset_seconds=40,
+    )
+
+    assert state.context_tokens == 14_000
+    assert state.context_max == 200_000
+    assert state.usage_used == 170_000
+    assert state.usage_limit == 500_000
+    assert state.usage_reset_seconds == 40
+
+
+def test_island_state_context_usage_default_none():
+    state = GoalController(make_goal()).island_state()
+    assert state.context_tokens is None
+    assert state.usage_limit is None

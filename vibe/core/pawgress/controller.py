@@ -89,6 +89,11 @@ class GoalController:
         budget: float | None = None,
         detail: str = "",
         elapsed: str | None = None,
+        context_tokens: int | None = None,
+        context_max: int | None = None,
+        usage_used: int | None = None,
+        usage_limit: int | None = None,
+        usage_reset_seconds: int | None = None,
     ) -> IslandState:
         g = self._goal
         criteria: list[Criterion] = []
@@ -110,6 +115,11 @@ class GoalController:
             elapsed=elapsed,
             cost=cost,
             budget=budget,
+            context_tokens=context_tokens,
+            context_max=context_max,
+            usage_used=usage_used,
+            usage_limit=usage_limit,
+            usage_reset_seconds=usage_reset_seconds,
             evidence=g.evidence if g.completed else [],
         )
 

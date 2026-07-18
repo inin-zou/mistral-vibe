@@ -11,11 +11,32 @@ from __future__ import annotations
 
 import sys
 import time
+from typing import TypedDict
 
 from vibe.core.pawgress.events import Criterion, IslandState, IslandStatus, encode_jsonl
 
 GOAL = "Fix the flaky cache test"
 BUDGET = 2.0
+CONTEXT_MAX = 200_000
+USAGE_LIMIT = 500_000
+
+
+class Stats(TypedDict):
+    context_tokens: int
+    context_max: int
+    usage_used: int
+    usage_limit: int
+    usage_reset_seconds: int
+
+
+def stats(ctx_tokens: int, usage_used: int, reset: int) -> Stats:
+    return {
+        "context_tokens": ctx_tokens,
+        "context_max": CONTEXT_MAX,
+        "usage_used": usage_used,
+        "usage_limit": USAGE_LIMIT,
+        "usage_reset_seconds": reset,
+    }
 
 
 def emit(state: IslandState, hold: float = 1.2) -> None:
@@ -50,6 +71,7 @@ def main() -> None:
             elapsed="0m18s",
             cost=0.04,
             budget=BUDGET,
+            **stats(6_000, 40_000, 11_400),
         )
     )
 
@@ -63,6 +85,7 @@ def main() -> None:
             elapsed="1m02s",
             cost=0.11,
             budget=BUDGET,
+            **stats(14_000, 120_000, 11_220),
         )
     )
 
@@ -77,6 +100,7 @@ def main() -> None:
                 elapsed=f"1m{20 + i * 8}s",
                 cost=0.14 + i * 0.03,
                 budget=BUDGET,
+                **stats(14_000 + i * 4_000, 120_000 + i * 30_000, 11_100 - i * 60),
             ),
             hold=0.9,
         )
@@ -91,6 +115,7 @@ def main() -> None:
             elapsed="2m41s",
             cost=0.31,
             budget=BUDGET,
+            **stats(34_000, 90_000, 10_980),
         ),
         hold=1.6,
     )
@@ -106,6 +131,7 @@ def main() -> None:
                 elapsed=f"3m{i * 7}s",
                 cost=0.40 + i * 0.02,
                 budget=BUDGET,
+                **stats(34_000 + i * 3_000, 90_000 + i * 40_000, 10_800 - i * 60),
             ),
             hold=0.9,
         )
@@ -120,6 +146,7 @@ def main() -> None:
             elapsed="3m58s",
             cost=0.52,
             budget=BUDGET,
+            **stats(60_000, 300_000, 10_620),
             evidence=[
                 "5/5 repeated runs passed",
                 "128 tests passed",

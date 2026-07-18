@@ -13,7 +13,7 @@ import shlex
 import signal
 import sys
 import time
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 import webbrowser
@@ -472,6 +472,14 @@ class _ImageAttachmentRejection:
     no_vision: bool = False
 
 
+class _PawgressStatsKwargs(TypedDict, total=False):
+    context_tokens: int
+    context_max: int
+    usage_used: int
+    usage_limit: int
+    usage_reset_seconds: int
+
+
 class VibeApp(App):  # noqa: PLR0904
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "app.tcss"
@@ -484,6 +492,7 @@ class VibeApp(App):  # noqa: PLR0904
     _pawgress_approval_id: str | None = None
     _pawgress_approval_tool: str | None = None
     _pawgress_approval_perms: list[RequiredPermission] | None = None
+    _pawgress_last_ctx_pct: int = -1
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "interrupt_or_quit", "Quit", show=False),
@@ -824,6 +833,7 @@ class VibeApp(App):  # noqa: PLR0904
                 max_tokens=self.config.get_active_model().auto_compact_threshold,
                 current_tokens=stats.context_tokens,
             )
+            self._emit_pawgress_stats()
 
         self.agent_loop.stats.add_listener("context_tokens", update_context_progress)
         self.agent_loop.stats.trigger_listeners()
@@ -3390,7 +3400,9 @@ class VibeApp(App):  # noqa: PLR0904
         self._pawgress = controller
         await self._persist_pawgress_goal()
         self._pawgress_sink.reset()
-        self._pawgress_sink.write(controller.island_state(detail="Goal set"))
+        self._pawgress_sink.write(
+            controller.island_state(detail="Goal set", **self._pawgress_stats_kwargs())
+        )
         launch_overlay(self._pawgress_sink.path)
         self._start_pawgress_control_watch()
         self._update_pawgress_status()
@@ -3460,7 +3472,9 @@ class VibeApp(App):  # noqa: PLR0904
             return
         decision = await controller.record_turn_end()
         await self._persist_pawgress_goal()
-        self._pawgress_sink.write(controller.island_state())
+        self._pawgress_sink.write(
+            controller.island_state(**self._pawgress_stats_kwargs())
+        )
         self._update_pawgress_status()
         if decision.completed:
             self._terminal_notifier.notify(NotificationContext.COMPLETE)
@@ -3485,6 +3499,40 @@ class VibeApp(App):  # noqa: PLR0904
         if self._pawgress_sink_cache is None:
             self._pawgress_sink_cache = PawgressSink()
         return self._pawgress_sink_cache
+
+    def _pawgress_stats_kwargs(self) -> _PawgressStatsKwargs:
+        stats = self.agent_loop.stats
+        kwargs: _PawgressStatsKwargs = {
+            "context_tokens": stats.context_tokens,
+            "context_max": self.config.get_active_model().auto_compact_threshold,
+        }
+        if stats.rate_limit_tokens_limit > 0:
+            kwargs["usage_used"] = max(
+                stats.rate_limit_tokens_limit - stats.rate_limit_tokens_remaining, 0
+            )
+            kwargs["usage_limit"] = stats.rate_limit_tokens_limit
+            kwargs["usage_reset_seconds"] = max(
+                0, 60 - int(time.monotonic() - stats.rate_limit_captured_at)
+            )
+        return kwargs
+
+    def _emit_pawgress_stats(self) -> None:
+        controller = self._pawgress
+        if (
+            controller is None
+            or controller.goal.completed
+            or self._pawgress_approval_id is not None
+        ):
+            return
+        stats = self.agent_loop.stats
+        ctx_max = self.config.get_active_model().auto_compact_threshold
+        pct = round(100 * stats.context_tokens / ctx_max) if ctx_max > 0 else 0
+        if pct == self._pawgress_last_ctx_pct:
+            return
+        self._pawgress_last_ctx_pct = pct
+        self._pawgress_sink.write(
+            controller.island_state(**self._pawgress_stats_kwargs())
+        )
 
     def _update_pawgress_status(self) -> None:
         try:
@@ -3557,7 +3605,9 @@ class VibeApp(App):  # noqa: PLR0904
             self._pawgress_control_pos = fh.tell()
         if changed:
             self._update_pawgress_status()
-            self._pawgress_sink.write(controller.island_state())
+            self._pawgress_sink.write(
+                controller.island_state(**self._pawgress_stats_kwargs())
+            )
 
     async def _resume_pawgress_goal(self) -> None:
         controller = self._pawgress
@@ -3581,7 +3631,9 @@ class VibeApp(App):  # noqa: PLR0904
         self._pawgress_approval_tool = tool
         self._pawgress_approval_perms = required_permissions
         summary = getattr(args, "command", None) or args.model_dump_json()
-        state = controller.island_state(detail=f"{tool}: {str(summary)[:60]}")
+        state = controller.island_state(
+            detail=f"{tool}: {str(summary)[:200]}", **self._pawgress_stats_kwargs()
+        )
         state = state.model_copy(
             update={
                 "state": IslandStatus.WAITING,
@@ -3597,7 +3649,9 @@ class VibeApp(App):  # noqa: PLR0904
         self._pawgress_approval_perms = None
         controller = self._pawgress
         if had_approval and controller is not None:
-            self._pawgress_sink.write(controller.island_state())
+            self._pawgress_sink.write(
+                controller.island_state(**self._pawgress_stats_kwargs())
+            )
 
     async def _resolve_pawgress_approval(self, action: ControlAction) -> None:
         future = self._pending_approval

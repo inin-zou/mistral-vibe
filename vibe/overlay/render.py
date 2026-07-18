@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import textwrap
 
 from vibe.core.pawgress.events import Criterion, IslandState, IslandStatus
 
@@ -12,6 +13,7 @@ BLUE = "#5aa9e6"
 MUTED = "#8a8a8a"
 FG = "#e6e6e6"
 
+
 _STATE_STYLE: dict[IslandStatus, tuple[str, str, str]] = {
     IslandStatus.WORKING: ("working", "", ORANGE),
     IslandStatus.VERIFYING: ("verifying", "[...]", BLUE),
@@ -20,6 +22,33 @@ _STATE_STYLE: dict[IslandStatus, tuple[str, str, str]] = {
     IslandStatus.PAUSED: ("paused", "zZ", MUTED),
     IslandStatus.COMPLETED: ("complete", "✓", GREEN),
 }
+
+
+_WRAP_WIDTH = 62
+_WRAP_MAX_LINES = 3
+
+
+def _wrap_text(
+    text: str, width: int = _WRAP_WIDTH, max_lines: int = _WRAP_MAX_LINES
+) -> list[str]:
+    """Wrap a single logical line into at most max_lines rows.
+
+    The overlay renders every space as &nbsp; (Qt rich text collapses runs of
+    spaces), so Qt can never soft-wrap these rows itself — an unbounded line
+    would blow the window width and get cut mid-word at the screen edge.
+    """
+    normalized = " ".join(text.split())
+    if len(normalized) <= width:
+        return [normalized]
+    lines = textwrap.wrap(
+        normalized,
+        width=width,
+        max_lines=max_lines,
+        placeholder="…",
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    return lines or [normalized[: width - 1] + "…"]
 
 
 def _parse_fraction(text: str | None) -> tuple[int, int] | None:
@@ -36,6 +65,42 @@ def progress_bar(current: int, total: int, width: int = 10) -> str:
         return "░" * width
     filled = min(width, round(width * current / total))
     return "█" * filled + "░" * (width - filled)
+
+
+def _pct(current: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return max(0, min(100, round(100 * current / total)))
+
+
+def _format_duration(seconds: int) -> str:
+    seconds = max(0, seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _reset_suffix(state: IslandState, age_seconds: int) -> str:
+    if state.usage_reset_seconds is None:
+        return ""
+    remaining = max(0, state.usage_reset_seconds - age_seconds)
+    return f" (resets in {_format_duration(remaining)})"
+
+
+def context_usage_line(state: IslandState, age_seconds: int = 0) -> str:
+    ctx = state.context_tokens or 0
+    ctx_max = state.context_max or 0
+    used = state.usage_used or 0
+    usage_max = state.usage_limit or 0
+    line = f"Context {progress_bar(ctx, ctx_max, 6)} {_pct(ctx, ctx_max)}%"
+    line += f" │ Usage {progress_bar(used, usage_max, 6)} {_pct(used, usage_max)}%"
+    if state.usage_limit:
+        line += _reset_suffix(state, age_seconds)
+    return line
 
 
 def _verification_fraction(state: IslandState) -> tuple[int, int] | None:
@@ -87,6 +152,8 @@ def render_island(state: IslandState, cat_frame: str) -> str:
         )
         lines.append(f"{_criterion_marker(criterion)} {criterion.label}{suffix}")
 
+    lines.append(context_usage_line(state))
+
     meta = _meta_line(state)
     if meta:
         lines.append(meta)
@@ -123,6 +190,25 @@ def _bar_html(current: int, total: int, color: str, width: int = 10) -> str:
     return _span("█" * filled, color) + _span("█" * (width - filled), EMPTY_BAR)
 
 
+def context_usage_html(state: IslandState, age_seconds: int = 0) -> str:
+    ctx = state.context_tokens or 0
+    ctx_max = state.context_max or 0
+    used = state.usage_used or 0
+    usage_max = state.usage_limit or 0
+    row = (
+        _span("Context ", MUTED)
+        + _bar_html(ctx, ctx_max, GREEN, width=6)
+        + _span(f" {_pct(ctx, ctx_max)}%", GREEN)
+        + _span(" │ ", MUTED)
+        + _span("Usage ", MUTED)
+        + _bar_html(used, usage_max, BLUE, width=6)
+        + _span(f" {_pct(used, usage_max)}%", BLUE)
+    )
+    if state.usage_limit:
+        row += _span(_reset_suffix(state, age_seconds), MUTED)
+    return row
+
+
 _DECOR_FRAMES: dict[IslandStatus, tuple[str, ...]] = {
     IslandStatus.WORKING: ("✦", "✧", " "),
     IslandStatus.VERIFYING: ("[.  ]", "[.. ]", "[...]"),
@@ -151,7 +237,11 @@ def _decoration(state: IslandState, tick: int) -> str:
 
 
 def render_island_html(
-    state: IslandState, cat_frame: str, tick: int = 0, with_buttons: bool = True
+    state: IslandState,
+    cat_frame: str,
+    tick: int = 0,
+    with_buttons: bool = True,
+    age_seconds: int = 0,
 ) -> str:
     label, symbol, color = _STATE_STYLE[state.state]
     if _is_retrying(state):
@@ -162,26 +252,18 @@ def render_island_html(
         head += f"  {symbol}"
     rows.append(_span(head, color) + _span("  ", FG) + _button("[×]", "quit", MUTED))
     rows.append(_span(" ", FG))
-    rows.append(_span(state.goal, FG))
+    for goal_line in _wrap_text(state.goal, max_lines=2):
+        rows.append(_span(goal_line, FG))
     if state.detail:
-        rows.append(
-            _span(state.detail, color if state.state is IslandStatus.WAITING else MUTED)
-        )
+        detail_color = color if state.state is IslandStatus.WAITING else MUTED
+        for detail_line in _wrap_text(state.detail):
+            rows.append(_span(detail_line, detail_color))
     rows.append(_span(" ", FG))
 
-    frac = _verification_fraction(state)
-    bar = ""
-    if frac is not None:
-        bar = (
-            _span("   ", FG)
-            + _bar_html(frac[0], frac[1], color)
-            + _span(f" {frac[0]}/{frac[1]}", color)
-        )
     cat_lines = cat_frame.splitlines() or [""]
-    mid = len(cat_lines) // 2
     decor = _span("  ", FG) + _span(_decoration(state, tick), color)
     for i, cat_line in enumerate(cat_lines):
-        suffix = bar if i == mid else (decor if i == 0 else "")
+        suffix = decor if i == 0 else ""
         rows.append(_span(f" {cat_line}", ORANGE) + suffix)
     rows.append(_span(" ", FG))
 
@@ -198,6 +280,9 @@ def render_island_html(
         rows.append(
             _span(marker, mark_color) + " " + _span(criterion.label + suffix, FG)
         )
+
+    rows.append(_span(" ", FG))
+    rows.append(context_usage_html(state, age_seconds))
 
     meta = _meta_line(state)
     if meta:
