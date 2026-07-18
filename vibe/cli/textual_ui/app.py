@@ -42,6 +42,7 @@ from vibe.cli.narrator_manager.narrator_manager_port import (
     NarratorState,
 )
 from vibe.cli.pawgress import PawgressSink, launch_overlay
+from vibe.cli.pawgress.focus import focus_terminal
 from vibe.cli.plan_offer.adapters.http_whoami_gateway import HttpWhoAmIGateway
 from vibe.cli.plan_offer.decide_plan_offer import (
     PlanInfo,
@@ -3540,6 +3541,8 @@ class VibeApp(App):  # noqa: PLR0904
                 elif message.action is ControlAction.STOP:
                     controller.stop()
                     changed = True
+                elif message.action is ControlAction.FOCUS_VIBE:
+                    self.call_later(focus_terminal)
                 elif message.action in {
                     ControlAction.ALLOW_ONCE,
                     ControlAction.ALLOW_SESSION,
@@ -4657,6 +4660,8 @@ class VibeApp(App):  # noqa: PLR0904
         self, widget: Widget, after: Widget | None = None, before: Widget | None = None
     ) -> None:
         messages_area = self._messages_area
+        if not messages_area.is_attached:
+            return
         is_user_initiated = isinstance(widget, (UserMessage, UserCommandMessage))
         should_anchor = is_user_initiated or self._chat_widget.is_at_bottom
 

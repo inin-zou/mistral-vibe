@@ -47,7 +47,15 @@ def launch_overlay(sink_path: Path) -> None:
     _kill_stale()
     try:
         process = subprocess.Popen(
-            [sys.executable, "-m", "vibe.overlay", "--file", str(sink_path)],
+            [
+                sys.executable,
+                "-m",
+                "vibe.overlay",
+                "--file",
+                str(sink_path),
+                "--parent-pid",
+                str(os.getpid()),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

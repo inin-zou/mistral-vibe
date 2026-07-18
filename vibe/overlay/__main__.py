@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import signal
 import sys
@@ -23,6 +24,7 @@ def main() -> None:
     parser.add_argument(
         "--control-file", default=str(VIBE_HOME.path / "pawgress-control.jsonl")
     )
+    parser.add_argument("--parent-pid", type=int, default=None)
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
@@ -45,6 +47,18 @@ def main() -> None:
     bridge = HotkeyBridge()
     bridge.triggered.connect(window.toggle_visibility)
     install_toggle_hotkey(bridge)
+
+    parent_pid = args.parent_pid if args.parent_pid is not None else os.getppid()
+
+    def quit_if_orphaned() -> None:
+        try:
+            os.kill(parent_pid, 0)
+        except OSError:
+            app.quit()
+
+    orphan_timer = QTimer()
+    orphan_timer.timeout.connect(quit_if_orphaned)
+    orphan_timer.start(1000)
 
     sys.exit(app.exec())
 
