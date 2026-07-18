@@ -9,6 +9,7 @@ from enum import StrEnum, auto
 import gc
 import os
 from pathlib import Path
+import shlex
 import signal
 import sys
 import time
@@ -22,6 +23,7 @@ from rich import print as rprint
 from textual.app import WINDOWS, App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
+from textual.css.query import NoMatches
 from textual.dom import NoScreen
 from textual.driver import Driver
 from textual.events import AppBlur, AppFocus, MouseUp
@@ -39,6 +41,8 @@ from vibe.cli.narrator_manager.narrator_manager_port import (
     NarratorManagerPort,
     NarratorState,
 )
+from vibe.cli.pawgress import PawgressSink, launch_overlay
+from vibe.cli.pawgress.focus import focus_terminal
 from vibe.cli.plan_offer.adapters.http_whoami_gateway import HttpWhoAmIGateway
 from vibe.cli.plan_offer.decide_plan_offer import (
     PlanInfo,
@@ -186,6 +190,13 @@ from vibe.core.hooks.models import HookStartEvent
 from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
+from vibe.core.pawgress import (
+    ControlAction,
+    Goal,
+    GoalController,
+    IslandStatus,
+    parse_control,
+)
 from vibe.core.rewind import RewindError
 from vibe.core.sentry import capture_sentry_exception
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
@@ -465,6 +476,14 @@ class VibeApp(App):  # noqa: PLR0904
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "app.tcss"
     PAUSE_GC_ON_SCROLL: ClassVar[bool] = True
+
+    _pawgress: GoalController | None = None
+    _pawgress_sink_cache: PawgressSink | None = None
+    _pawgress_control_pos: int = 0
+    _pawgress_control_started: bool = False
+    _pawgress_approval_id: str | None = None
+    _pawgress_approval_tool: str | None = None
+    _pawgress_approval_perms: list[RequiredPermission] | None = None
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "interrupt_or_quit", "Quit", show=False),
@@ -760,6 +779,9 @@ class VibeApp(App):  # noqa: PLR0904
 
         with Horizontal(id="bottom-bar"):
             yield PathDisplay(self.config.displayed_workdir or Path.cwd())
+            pawgress_status = NoMarkupStatic(id="pawgress-status")
+            pawgress_status.display = False
+            yield pawgress_status
             yield NoMarkupStatic(id="spacer")
             yield ContextProgress()
 
@@ -2181,6 +2203,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self._wait_for_typing_pause()
             self._pending_approval = asyncio.Future()
             self._terminal_notifier.notify(NotificationContext.ACTION_REQUIRED)
+            self._pawgress_announce_approval(tool, args, required_permissions)
             try:
                 with paused_timer(self._loading_widget):
                     await self._switch_to_approval_app(tool, args, required_permissions)
@@ -2188,6 +2211,7 @@ class VibeApp(App):  # noqa: PLR0904
                 return result
             finally:
                 self._pending_approval = None
+                self._pawgress_clear_approval()
                 await self._switch_to_input_app()
 
     async def _user_input_callback(self, args: BaseModel) -> BaseModel:
@@ -2319,6 +2343,7 @@ class VibeApp(App):  # noqa: PLR0904
             self._queue.start_drain_if_needed()
             await self._refresh_windowing_from_history()
             self._terminal_notifier.notify(NotificationContext.COMPLETE)
+            await self._run_pawgress_turn_end()
 
     def _resolve_turn_error_message(self, e: Exception) -> str:
         if isinstance(e, RateLimitError):
@@ -3338,6 +3363,259 @@ class VibeApp(App):  # noqa: PLR0904
     async def _loop_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         widget = await self._loop_runner.handle_command(cmd_args)
         await self._mount_and_scroll(widget)
+
+    async def _pawgress_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        args = cmd_args.strip()
+        if args == "status":
+            await self._show_pawgress_status()
+            return
+        description, verify, repeat, constraints = self._parse_pawgress_args(args)
+        if not description:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    'Usage: /pawgress <description> [--verify "<cmd>"] '
+                    '[--repeat N] [--constraint "<c>"]',
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        goal = Goal(
+            goal_id=uuid4().hex[:8],
+            description=description,
+            verify_command=verify,
+            repeat=repeat,
+            constraints=constraints,
+        )
+        controller = GoalController(goal, cwd=str(Path.cwd()))
+        self._pawgress = controller
+        await self._persist_pawgress_goal()
+        self._pawgress_sink.reset()
+        self._pawgress_sink.write(controller.island_state(detail="Goal set"))
+        launch_overlay(self._pawgress_sink.path)
+        self._start_pawgress_control_watch()
+        self._update_pawgress_status()
+        await self._mount_and_scroll(
+            WarningMessage(f"🐾 Pawgress goal set: {description}")
+        )
+        await self._handle_user_message(description, title_source=description)
+
+    @staticmethod
+    def _parse_pawgress_args(cmd_args: str) -> tuple[str, str | None, int, list[str]]:
+        tokens = shlex.split(cmd_args)
+        description_parts: list[str] = []
+        verify: str | None = None
+        repeat = 1
+        constraints: list[str] = []
+        seen_flag = False
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            match token:
+                case "--verify":
+                    seen_flag = True
+                    if i + 1 < len(tokens):
+                        i += 1
+                        verify = tokens[i]
+                case "--repeat":
+                    seen_flag = True
+                    if i + 1 < len(tokens) and tokens[i + 1].isdigit():
+                        i += 1
+                        repeat = max(int(tokens[i]), 1)
+                case "--constraint":
+                    seen_flag = True
+                    if i + 1 < len(tokens):
+                        i += 1
+                        constraints.append(tokens[i])
+                case _:
+                    if not seen_flag:
+                        description_parts.append(token)
+            i += 1
+        return " ".join(description_parts), verify, repeat, constraints
+
+    async def _show_pawgress_status(self) -> None:
+        if self._pawgress is None:
+            await self._mount_and_scroll(
+                WarningMessage(
+                    "No active Pawgress goal. Set one with /pawgress <description>."
+                )
+            )
+            return
+        goal = self._pawgress.goal
+        lines = [
+            self._pawgress.status_line(),
+            f"Goal: {goal.description}",
+            f"Iteration: {goal.iteration}/{goal.max_iterations}",
+        ]
+        if goal.verify_command:
+            lines.append(
+                f"Verify: {goal.verify_command} ({goal.last_pass_count}/{goal.repeat})"
+            )
+        if goal.constraints:
+            lines.append("Constraints: " + ", ".join(goal.constraints))
+        await self._mount_and_scroll(WarningMessage("\n".join(lines)))
+
+    async def _run_pawgress_turn_end(self) -> None:
+        controller = self._pawgress
+        if controller is None or controller.goal.completed:
+            return
+        decision = await controller.record_turn_end()
+        await self._persist_pawgress_goal()
+        self._pawgress_sink.write(controller.island_state())
+        self._update_pawgress_status()
+        if decision.completed:
+            self._terminal_notifier.notify(NotificationContext.COMPLETE)
+            return
+        if decision.should_continue and decision.prompt:
+            await self._queue.enqueue_prompt(decision.prompt)
+            self._queue.start_drain_if_needed()
+
+    async def _persist_pawgress_goal(self) -> None:
+        if self._pawgress is None:
+            return
+        session_logger = self.agent_loop.session_logger
+        session_dir = session_logger.session_dir
+        if not session_logger.enabled or session_dir is None:
+            return
+        if session_logger.session_metadata is not None:
+            session_logger.session_metadata.goal = self._pawgress.goal
+        await session_logger.persist_goal(self._pawgress.goal, session_dir)
+
+    @property
+    def _pawgress_sink(self) -> PawgressSink:
+        if self._pawgress_sink_cache is None:
+            self._pawgress_sink_cache = PawgressSink()
+        return self._pawgress_sink_cache
+
+    def _update_pawgress_status(self) -> None:
+        try:
+            widget = self.query_one("#pawgress-status", NoMarkupStatic)
+        except NoMatches:
+            return
+        if self._pawgress is None:
+            widget.display = False
+            return
+        widget.update(self._pawgress.status_line())
+        widget.display = True
+
+    @property
+    def _pawgress_control_path(self) -> Path:
+        return self._pawgress_sink.path.parent / "pawgress-control.jsonl"
+
+    def _start_pawgress_control_watch(self) -> None:
+        try:
+            self._pawgress_control_path.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+        self._pawgress_control_pos = 0
+        if not self._pawgress_control_started:
+            self.set_interval(0.3, self._poll_pawgress_control)
+            self._pawgress_control_started = True
+
+    def _poll_pawgress_control(self) -> None:
+        controller = self._pawgress
+        if controller is None:
+            return
+        path = self._pawgress_control_path
+        if not path.exists():
+            return
+        if path.stat().st_size < self._pawgress_control_pos:
+            self._pawgress_control_pos = 0
+        changed = False
+        with path.open("r", encoding="utf-8") as fh:
+            fh.seek(self._pawgress_control_pos)
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    message = parse_control(stripped)
+                except ValueError:
+                    continue
+                if message.action is ControlAction.PAUSE:
+                    controller.pause()
+                    changed = True
+                elif message.action is ControlAction.RESUME:
+                    controller.resume()
+                    changed = True
+                    self.call_later(self._resume_pawgress_goal)
+                elif message.action is ControlAction.STOP:
+                    controller.stop()
+                    changed = True
+                elif message.action is ControlAction.FOCUS_VIBE:
+                    self.call_later(focus_terminal)
+                elif message.action in {
+                    ControlAction.ALLOW_ONCE,
+                    ControlAction.ALLOW_SESSION,
+                    ControlAction.ALLOW_ALWAYS,
+                    ControlAction.DENY,
+                }:
+                    if (
+                        self._pawgress_approval_id is not None
+                        and message.request_id == self._pawgress_approval_id
+                    ):
+                        self.call_later(self._resolve_pawgress_approval, message.action)
+            self._pawgress_control_pos = fh.tell()
+        if changed:
+            self._update_pawgress_status()
+            self._pawgress_sink.write(controller.island_state())
+
+    async def _resume_pawgress_goal(self) -> None:
+        controller = self._pawgress
+        if controller is None or controller.goal.completed:
+            return
+        await self._queue.enqueue_prompt(
+            f"Continue working on the goal: {controller.goal.description}"
+        )
+        self._queue.start_drain_if_needed()
+
+    def _pawgress_announce_approval(
+        self,
+        tool: str,
+        args: BaseModel,
+        required_permissions: list[RequiredPermission] | None,
+    ) -> None:
+        controller = self._pawgress
+        if controller is None or controller.goal.completed:
+            return
+        self._pawgress_approval_id = uuid4().hex[:8]
+        self._pawgress_approval_tool = tool
+        self._pawgress_approval_perms = required_permissions
+        summary = getattr(args, "command", None) or args.model_dump_json()
+        state = controller.island_state(detail=f"{tool}: {str(summary)[:60]}")
+        state = state.model_copy(
+            update={
+                "state": IslandStatus.WAITING,
+                "request_id": self._pawgress_approval_id,
+            }
+        )
+        self._pawgress_sink.write(state)
+
+    def _pawgress_clear_approval(self) -> None:
+        had_approval = self._pawgress_approval_id is not None
+        self._pawgress_approval_id = None
+        self._pawgress_approval_tool = None
+        self._pawgress_approval_perms = None
+        controller = self._pawgress
+        if had_approval and controller is not None:
+            self._pawgress_sink.write(controller.island_state())
+
+    async def _resolve_pawgress_approval(self, action: ControlAction) -> None:
+        future = self._pending_approval
+        tool = self._pawgress_approval_tool
+        if future is None or future.done() or tool is None:
+            return
+        perms = self._pawgress_approval_perms or []
+        if action is ControlAction.ALLOW_SESSION:
+            await self.agent_loop.approve_always(tool, perms)
+        elif action is ControlAction.ALLOW_ALWAYS:
+            await self.agent_loop.approve_always(tool, perms, save_permanently=True)
+        if action is ControlAction.DENY:
+            feedback = str(
+                get_user_cancellation_message(CancellationReason.OPERATION_CANCELLED)
+            )
+            future.set_result((ApprovalResponse.NO, feedback))
+        else:
+            future.set_result((ApprovalResponse.YES, None))
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:
@@ -4382,6 +4660,8 @@ class VibeApp(App):  # noqa: PLR0904
         self, widget: Widget, after: Widget | None = None, before: Widget | None = None
     ) -> None:
         messages_area = self._messages_area
+        if not messages_area.is_attached:
+            return
         is_user_initiated = isinstance(widget, (UserMessage, UserCommandMessage))
         should_anchor = is_user_initiated or self._chat_widget.is_at_bottom
 
