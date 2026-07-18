@@ -20,6 +20,10 @@ class ControlAction(StrEnum):
     RESUME = auto()
     STOP = auto()
     FOCUS_VIBE = auto()
+    ALLOW_ONCE = auto()
+    ALLOW_SESSION = auto()
+    ALLOW_ALWAYS = auto()
+    DENY = auto()
 
 
 class Criterion(BaseModel):
@@ -43,6 +47,7 @@ class IslandState(BaseModel):
     cost: float | None = None
     budget: float | None = None
     evidence: list[str] = Field(default_factory=list)
+    request_id: str | None = None
 
 
 class ControlMessage(BaseModel):
@@ -50,6 +55,7 @@ class ControlMessage(BaseModel):
 
     type: Literal["control"] = "control"
     action: ControlAction
+    request_id: str | None = None
 
 
 def encode_jsonl(message: IslandState | ControlMessage) -> str:

@@ -163,6 +163,10 @@ def render_island_html(
     rows.append(_span(head, color) + _span("  ", FG) + _button("[×]", "quit", MUTED))
     rows.append(_span(" ", FG))
     rows.append(_span(state.goal, FG))
+    if state.detail:
+        rows.append(
+            _span(state.detail, color if state.state is IslandStatus.WAITING else MUTED)
+        )
     rows.append(_span(" ", FG))
 
     frac = _verification_fraction(state)
@@ -217,7 +221,12 @@ _BUTTON_GAP = "&nbsp;" * 4
 
 def buttons_html(state: IslandState) -> str:
     if state.state is IslandStatus.WAITING:
-        return _button("[Open Vibe]", "focus_vibe", BLUE)
+        return _BUTTON_GAP.join([
+            _button("[Allow once]", "allow_once", GREEN),
+            _button("[Session]", "allow_session", BLUE),
+            _button("[Always]", "allow_always", AMBER),
+            _button("[Deny]", "deny", RED),
+        ])
     first = (
         _button("[Resume]", "resume", GREEN)
         if state.state is IslandStatus.PAUSED

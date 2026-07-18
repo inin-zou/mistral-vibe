@@ -189,7 +189,13 @@ from vibe.core.hooks.models import HookStartEvent
 from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
-from vibe.core.pawgress import ControlAction, Goal, GoalController, parse_control
+from vibe.core.pawgress import (
+    ControlAction,
+    Goal,
+    GoalController,
+    IslandStatus,
+    parse_control,
+)
 from vibe.core.rewind import RewindError
 from vibe.core.sentry import capture_sentry_exception
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
@@ -474,6 +480,9 @@ class VibeApp(App):  # noqa: PLR0904
     _pawgress_sink_cache: PawgressSink | None = None
     _pawgress_control_pos: int = 0
     _pawgress_control_started: bool = False
+    _pawgress_approval_id: str | None = None
+    _pawgress_approval_tool: str | None = None
+    _pawgress_approval_perms: list[RequiredPermission] | None = None
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "interrupt_or_quit", "Quit", show=False),
@@ -2193,6 +2202,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self._wait_for_typing_pause()
             self._pending_approval = asyncio.Future()
             self._terminal_notifier.notify(NotificationContext.ACTION_REQUIRED)
+            self._pawgress_announce_approval(tool, args, required_permissions)
             try:
                 with paused_timer(self._loading_widget):
                     await self._switch_to_approval_app(tool, args, required_permissions)
@@ -2200,6 +2210,7 @@ class VibeApp(App):  # noqa: PLR0904
                 return result
             finally:
                 self._pending_approval = None
+                self._pawgress_clear_approval()
                 await self._switch_to_input_app()
 
     async def _user_input_callback(self, args: BaseModel) -> BaseModel:
@@ -3529,6 +3540,17 @@ class VibeApp(App):  # noqa: PLR0904
                 elif message.action is ControlAction.STOP:
                     controller.stop()
                     changed = True
+                elif message.action in {
+                    ControlAction.ALLOW_ONCE,
+                    ControlAction.ALLOW_SESSION,
+                    ControlAction.ALLOW_ALWAYS,
+                    ControlAction.DENY,
+                }:
+                    if (
+                        self._pawgress_approval_id is not None
+                        and message.request_id == self._pawgress_approval_id
+                    ):
+                        self.call_later(self._resolve_pawgress_approval, message.action)
             self._pawgress_control_pos = fh.tell()
         if changed:
             self._update_pawgress_status()
@@ -3542,6 +3564,55 @@ class VibeApp(App):  # noqa: PLR0904
             f"Continue working on the goal: {controller.goal.description}"
         )
         self._queue.start_drain_if_needed()
+
+    def _pawgress_announce_approval(
+        self,
+        tool: str,
+        args: BaseModel,
+        required_permissions: list[RequiredPermission] | None,
+    ) -> None:
+        controller = self._pawgress
+        if controller is None or controller.goal.completed:
+            return
+        self._pawgress_approval_id = uuid4().hex[:8]
+        self._pawgress_approval_tool = tool
+        self._pawgress_approval_perms = required_permissions
+        summary = getattr(args, "command", None) or args.model_dump_json()
+        state = controller.island_state(detail=f"{tool}: {str(summary)[:60]}")
+        state = state.model_copy(
+            update={
+                "state": IslandStatus.WAITING,
+                "request_id": self._pawgress_approval_id,
+            }
+        )
+        self._pawgress_sink.write(state)
+
+    def _pawgress_clear_approval(self) -> None:
+        had_approval = self._pawgress_approval_id is not None
+        self._pawgress_approval_id = None
+        self._pawgress_approval_tool = None
+        self._pawgress_approval_perms = None
+        controller = self._pawgress
+        if had_approval and controller is not None:
+            self._pawgress_sink.write(controller.island_state())
+
+    async def _resolve_pawgress_approval(self, action: ControlAction) -> None:
+        future = self._pending_approval
+        tool = self._pawgress_approval_tool
+        if future is None or future.done() or tool is None:
+            return
+        perms = self._pawgress_approval_perms or []
+        if action is ControlAction.ALLOW_SESSION:
+            await self.agent_loop.approve_always(tool, perms)
+        elif action is ControlAction.ALLOW_ALWAYS:
+            await self.agent_loop.approve_always(tool, perms, save_permanently=True)
+        if action is ControlAction.DENY:
+            feedback = str(
+                get_user_cancellation_message(CancellationReason.OPERATION_CANCELLED)
+            )
+            future.set_result((ApprovalResponse.NO, feedback))
+        else:
+            future.set_result((ApprovalResponse.YES, None))
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:

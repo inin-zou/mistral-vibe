@@ -28,6 +28,10 @@ _ACTIONS: dict[str, ControlAction] = {
     "resume": ControlAction.RESUME,
     "stop": ControlAction.STOP,
     "focus_vibe": ControlAction.FOCUS_VIBE,
+    "allow_once": ControlAction.ALLOW_ONCE,
+    "allow_session": ControlAction.ALLOW_SESSION,
+    "allow_always": ControlAction.ALLOW_ALWAYS,
+    "deny": ControlAction.DENY,
 }
 
 _STYLE = """
@@ -203,7 +207,8 @@ class IslandWindow(QWidget):
         self._emit_control(action)
 
     def _emit_control(self, action: ControlAction) -> None:
-        line = encode_jsonl(ControlMessage(action=action))
+        request_id = self._state.request_id if self._state else None
+        line = encode_jsonl(ControlMessage(action=action, request_id=request_id))
         if self._control_path is None:
             sys.stdout.write(line)
             sys.stdout.flush()
