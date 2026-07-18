@@ -3,8 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QCursor, QGuiApplication, QMouseEvent, QResizeEvent
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtGui import (
+    QCursor,
+    QGuiApplication,
+    QMouseEvent,
+    QResizeEvent,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -21,6 +27,7 @@ from vibe.core.pawgress.events import (
     encode_jsonl,
 )
 from vibe.overlay.cat import CatAnimator
+from vibe.overlay.macos import make_visible_on_all_spaces
 from vibe.overlay.render import buttons_html, render_island_html
 
 _ACTIONS: dict[str, ControlAction] = {
@@ -56,18 +63,21 @@ _MARGIN_TOP = 12
 _MARGIN_BOTTOM = 9
 _SPACING = 7
 _BORDER = 2
+_DRAG_THRESHOLD_PX = 8
 
 
 class IslandWindow(QWidget):
     def __init__(self, control_path: Path | None = None) -> None:
         super().__init__()
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setStyleSheet(_STYLE)
 
         self._cat = CatAnimator()
@@ -78,6 +88,7 @@ class IslandWindow(QWidget):
         self._user_moved = False
         self._user_resized = False
         self._programmatic_resize = False
+        self._press_pos = QPoint()
 
         frame = QFrame(self)
         frame.setObjectName("island")
@@ -130,7 +141,7 @@ class IslandWindow(QWidget):
         self._state = state
         self._render()
         self._resize()
-        self.raise_()
+        make_visible_on_all_spaces(self)
 
     def toggle_visibility(self) -> None:
         if self.isVisible():
@@ -143,6 +154,17 @@ class IslandWindow(QWidget):
         self._ticks += 1
         self._cat.next_frame()
         self._render()
+        if self._ticks % 3 == 0:
+            self._follow_cursor_screen()
+            make_visible_on_all_spaces(self)
+
+    def _follow_cursor_screen(self) -> None:
+        target = QGuiApplication.screenAt(QCursor.pos())
+        if target is None or self.screen() is target:
+            return
+        geo = target.availableGeometry()
+        self._user_moved = False
+        self.move(geo.x() + (geo.width() - self.width()) // 2, geo.y() + 8)
 
     def _render(self) -> None:
         if self._state is None:
@@ -178,6 +200,18 @@ class IslandWindow(QWidget):
             )
             self._programmatic_resize = False
         self._reposition()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._follow_cursor_screen()
+        make_visible_on_all_spaces(self)
+        QTimer.singleShot(100, lambda: make_visible_on_all_spaces(self))
+
+    def event(self, event: QEvent) -> bool:
+        handled = super().event(event)
+        if event.type() == QEvent.Type.WinIdChange and self.isVisible():
+            QTimer.singleShot(0, lambda: make_visible_on_all_spaces(self))
+        return handled
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         dragging = bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
@@ -223,14 +257,21 @@ class IslandWindow(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_offset = (
-                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            )
+            point = event.globalPosition().toPoint()
+            self._drag_offset = point - self.frameGeometry().topLeft()
+            self._press_pos = point
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._drag_offset is not None:
-            self._user_moved = True
-            self.move(event.globalPosition().toPoint() - self._drag_offset)
+        if self._drag_offset is None:
+            return
+        point = event.globalPosition().toPoint()
+        if (
+            not self._user_moved
+            and (point - self._press_pos).manhattanLength() < _DRAG_THRESHOLD_PX
+        ):
+            return
+        self._user_moved = True
+        self.move(point - self._drag_offset)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         self._drag_offset = None
