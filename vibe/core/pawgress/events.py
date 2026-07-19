@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class IslandStatus(StrEnum):
+    PREPARING = auto()
     WORKING = auto()
     VERIFYING = auto()
     WAITING = auto()

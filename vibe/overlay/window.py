@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-import sys
-
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QCursor,
     QGuiApplication,
@@ -20,15 +17,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibe.core.pawgress.events import (
-    ControlAction,
-    ControlMessage,
-    IslandState,
-    encode_jsonl,
-)
+from vibe.core.pawgress.events import ControlAction, IslandState
+from vibe.core.pawgress.protocol import ControlMsg
 from vibe.overlay.cat import CatAnimator
 from vibe.overlay.macos import make_visible_on_all_spaces
-from vibe.overlay.render import buttons_html, render_island_html
+from vibe.overlay.registry import SessionEntry
+from vibe.overlay.render import (
+    MUTED,
+    _span as _span_html,
+    buttons_html,
+    detail_nav_html,
+    directory_row_html,
+    render_island_html,
+)
 
 _ACTIONS: dict[str, ControlAction] = {
     "pause": ControlAction.PAUSE,
@@ -68,7 +69,11 @@ TICK_SECONDS = 0.16
 
 
 class IslandWindow(QWidget):
-    def __init__(self, control_path: Path | None = None) -> None:
+    control_requested = Signal(object)
+    row_selected = Signal(str)  # a directory row was clicked → open its detail
+    open_directory_requested = Signal()  # ‹ all — back to the directory
+
+    def __init__(self) -> None:  # noqa: PLR0915
         super().__init__()
         self.setWindowFlags(
             Qt.WindowType.Tool
@@ -84,7 +89,11 @@ class IslandWindow(QWidget):
         self._cat = CatAnimator()
         self._state: IslandState | None = None
         self._drag_offset: QPoint | None = None
-        self._control_path = control_path
+        self.active_control_sid: str | None = None
+        self._mode = "detail"  # "detail" | "directory"
+        self._entries: list[SessionEntry] = []
+        self._active_sid: str | None = None
+        self._active_index = 0
         self._ticks = 0
         self._state_ticks = 0
         self._user_moved = False
@@ -94,6 +103,7 @@ class IslandWindow(QWidget):
 
         frame = QFrame(self)
         frame.setObjectName("island")
+
         self._label = QLabel(frame)
         self._label.setTextFormat(Qt.TextFormat.RichText)
         self._label.setOpenExternalLinks(False)
@@ -139,12 +149,45 @@ class IslandWindow(QWidget):
         self._render()
         self._resize()
 
-    def update_state(self, state: IslandState) -> None:
+    def set_sessions(
+        self, entries: list[SessionEntry], active_sid: str | None, active_index: int
+    ) -> None:
+        """Socket path: full session list + which one is active (its detail slide)."""
+        self._entries = entries
+        self._active_sid = active_sid
+        self.active_control_sid = active_sid
+        self._active_index = active_index
+        self._state = next((e.state for e in entries if e.sid == active_sid), None)
+        self._state_ticks = self._ticks
+        self._render()
+        self._resize()
+        if entries:
+            make_visible_on_all_spaces(self)
+
+    def update_state(self, state: IslandState | None) -> None:
+        """Demo/single path (stdin): one session, always the detail view."""
+        self._mode = "detail"
+        self._entries = []
         self._state = state
         self._state_ticks = self._ticks
         self._render()
         self._resize()
-        make_visible_on_all_spaces(self)
+        if state is not None:
+            make_visible_on_all_spaces(self)
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    def enter_directory(self) -> None:
+        self._mode = "directory"
+        self._render()
+        self._resize()
+
+    def enter_detail(self) -> None:
+        self._mode = "detail"
+        self._render()
+        self._resize()
 
     def toggle_visibility(self) -> None:
         if self.isVisible():
@@ -170,21 +213,50 @@ class IslandWindow(QWidget):
         self.move(geo.x() + (geo.width() - self.width()) // 2, geo.y() + 8)
 
     def _render(self) -> None:
+        if self._mode == "directory" and self._entries:
+            self._render_directory()
+        else:
+            self._render_detail()
+
+    def _render_directory(self) -> None:
+        rows = [
+            _span_html(f"\U0001f43e Pawgress · {len(self._entries)} sessions", MUTED)
+        ]
+        for entry in self._entries:
+            status = entry.state.state if entry.state else None
+            rows.append(
+                directory_row_html(
+                    entry.sid,
+                    entry.label,
+                    status,
+                    entry.model,
+                    entry.terminal,
+                    entry.elapsed,
+                    entry.sid == self._active_sid,
+                )
+            )
+        self._label.setText("<br>".join(rows))
+        self._buttons.setText("")
+
+    def _render_detail(self) -> None:
         if self._state is None:
             self._label.setText(
                 '<span style="color:#8a8a8a">\U0001f43e Pawgress · idle</span>'
             )
             self._buttons.setText("")
             return
-        self._label.setText(
-            render_island_html(
-                self._state,
-                self._cat.current_frame(),
-                self._ticks,
-                with_buttons=False,
-                age_seconds=int((self._ticks - self._state_ticks) * TICK_SECONDS),
-            )
+        total = len(self._entries)
+        header = ""
+        if total > 1:
+            header = detail_nav_html(self._active_index, total) + "<br>"
+        island = render_island_html(
+            self._state,
+            self._cat.current_frame(),
+            self._ticks,
+            with_buttons=False,
+            age_seconds=int((self._ticks - self._state_ticks) * TICK_SECONDS),
         )
+        self._label.setText(header + island)
         self._buttons.setText(buttons_html(self._state))
 
     def _resize(self) -> None:
@@ -242,6 +314,12 @@ class IslandWindow(QWidget):
             if instance is not None:
                 instance.quit()
             return
+        if href.startswith("row:"):
+            self.row_selected.emit(href[len("row:") :])
+            return
+        if href == "open_directory":
+            self.open_directory_requested.emit()
+            return
         action = _ACTIONS.get(href)
         if action is None:
             return
@@ -249,18 +327,7 @@ class IslandWindow(QWidget):
 
     def _emit_control(self, action: ControlAction) -> None:
         request_id = self._state.request_id if self._state else None
-        line = encode_jsonl(ControlMessage(action=action, request_id=request_id))
-        if self._control_path is None:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            return
-        try:
-            self._control_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._control_path.open("a", encoding="utf-8") as fh:
-                fh.write(line)
-                fh.flush()
-        except OSError:
-            pass
+        self.control_requested.emit(ControlMsg(action=action, request_id=request_id))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
