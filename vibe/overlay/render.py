@@ -15,6 +15,7 @@ FG = "#e6e6e6"
 
 
 _STATE_STYLE: dict[IslandStatus, tuple[str, str, str]] = {
+    IslandStatus.PREPARING: ("planning the goal", "…", BLUE),
     IslandStatus.WORKING: ("working", "", ORANGE),
     IslandStatus.VERIFYING: ("verifying", "[...]", BLUE),
     IslandStatus.WAITING: ("Vibe needs you", "!", AMBER),
@@ -210,6 +211,7 @@ def context_usage_html(state: IslandState, age_seconds: int = 0) -> str:
 
 
 _DECOR_FRAMES: dict[IslandStatus, tuple[str, ...]] = {
+    IslandStatus.PREPARING: ("·  ", "·· ", "···"),
     IslandStatus.WORKING: ("✦", "✧", " "),
     IslandStatus.VERIFYING: ("[.  ]", "[.. ]", "[...]"),
     IslandStatus.WAITING: ("!", " "),

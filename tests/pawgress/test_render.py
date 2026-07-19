@@ -68,6 +68,18 @@ def test_reset_countdown_ages_and_floors_at_zero():
     assert "(resets in 0s)" in context_usage_line(state, age_seconds=999)
 
 
+def test_preparing_state_renders_without_error():
+    state = make_state(
+        state=IslandStatus.PREPARING, detail="Drafting an acceptance test…"
+    )
+    # HTML renderer nbsp-encodes spaces, so match on a single word.
+    html = render_island_html(state, "cat", tick=0)
+    assert "planning" in html
+    # plain-text renderer must also handle the new status
+    text = render_island(state, "cat")
+    assert "planning the goal" in text
+
+
 def test_render_island_includes_context_line():
     text = render_island(make_state(context_tokens=14_000, context_max=200_000), "cat")
     assert "Context" in text

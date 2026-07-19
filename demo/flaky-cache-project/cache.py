@@ -28,9 +28,7 @@ class LRUCache:
             self._store.move_to_end(key)
         self._store[key] = value
         if len(self._store) > self.capacity:
-            # BUG: evicts the most-recently-used entry (last=True) instead of the
-            # least-recently-used one. The one-line fix is `last=False`.
-            self._store.popitem(last=True)
+            self._store.popitem(last=False)
 
     def __len__(self) -> int:
         return len(self._store)
