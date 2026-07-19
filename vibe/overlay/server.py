@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
+from vibe.core.pawgress.events import IslandStatus
 from vibe.core.pawgress.protocol import (
     ByeMsg,
     ControlMsg,
@@ -21,10 +22,24 @@ from vibe.core.pawgress.protocol import (
 )
 from vibe.overlay.registry import SessionRegistry
 
+# States worth surfacing a hidden overlay for — "notification" events, not
+# routine working/verifying churn.
+_ATTENTION_STATES = frozenset({
+    IslandStatus.WAITING,
+    IslandStatus.BLOCKED,
+    IslandStatus.COMPLETED,
+})
+
+
+def is_attention_event(prev: IslandStatus | None, new: IslandStatus) -> bool:
+    """True when a session transitions INTO a notify-worthy state."""
+    return new != prev and new in _ATTENTION_STATES
+
 
 class OverlayServer(QObject):
     state_changed = Signal()
     empty = Signal()
+    attention = Signal(str)  # a session entered a notify-worthy state (sid)
 
     def __init__(self) -> None:
         super().__init__()
@@ -34,6 +49,7 @@ class OverlayServer(QObject):
         self._sockets: dict[str, QLocalSocket] = {}
         self._sid_of: dict[int, str] = {}
         self._buffers: dict[int, bytes] = {}
+        self._last_status: dict[str, IslandStatus] = {}
 
     def listen(self, socket_path: str) -> bool:
         # We hold the flock, so any existing path is stale and safe to clear.
@@ -73,8 +89,15 @@ class OverlayServer(QObject):
             self._bind(sock, msg.sid)
             self.registry.upsert_state(msg.sid, msg.state)
             self.state_changed.emit()
+            self._maybe_notify(msg.sid, msg.state.state)
         elif isinstance(msg, ByeMsg):
             self._drop(msg.sid)
+
+    def _maybe_notify(self, sid: str, status: IslandStatus) -> None:
+        prev = self._last_status.get(sid)
+        self._last_status[sid] = status
+        if is_attention_event(prev, status):
+            self.attention.emit(sid)
 
     def _bind(self, sock: QLocalSocket, sid: str) -> None:
         self._sockets[sid] = sock
@@ -90,6 +113,7 @@ class OverlayServer(QObject):
     def _drop(self, sid: str) -> None:
         self.registry.remove(sid)
         self._sockets.pop(sid, None)
+        self._last_status.pop(sid, None)
         self.state_changed.emit()
         if self.registry.count() == 0:
             self.empty.emit()

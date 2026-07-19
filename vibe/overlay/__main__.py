@@ -79,6 +79,18 @@ def main() -> None:  # noqa: PLR0915
         window.enter_directory()
         refresh()
 
+    def on_attention(sid: str) -> None:
+        # A hidden overlay resurfaces on a notify-worthy update, landing on the
+        # directory (not a specific detail) so concurrent updates don't fight.
+        if window.isVisible():
+            return
+        server.registry.set_active(sid)
+        window.enter_directory()
+        window.show()
+        window.raise_()
+        make_visible_on_all_spaces(window)
+        refresh()
+
     # Keyboard navigation (global hotkeys), interpreted by current view mode.
     def key_left() -> None:  # cmd+alt+left: detail → directory
         if window.mode == "detail":
@@ -102,6 +114,7 @@ def main() -> None:  # noqa: PLR0915
 
     server.state_changed.connect(refresh)
     server.empty.connect(on_empty)
+    server.attention.connect(on_attention)
     window.control_requested.connect(on_control)
     window.row_selected.connect(on_row_selected)
     window.open_directory_requested.connect(on_open_directory)
