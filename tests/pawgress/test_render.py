@@ -8,6 +8,8 @@ from vibe.overlay.render import (
     _wrap_text,
     context_usage_html,
     context_usage_line,
+    detail_nav_html,
+    directory_row_html,
     render_island,
     render_island_html,
 )
@@ -66,6 +68,42 @@ def test_reset_countdown_ages_and_floors_at_zero():
     state = make_state(usage_used=1, usage_limit=10, usage_reset_seconds=40)
     assert "(resets in 25s)" in context_usage_line(state, age_seconds=15)
     assert "(resets in 0s)" in context_usage_line(state, age_seconds=999)
+
+
+def test_directory_row_links_by_sid_and_shows_tags():
+    html = directory_row_html(
+        sid="s1",
+        label="Fix the bug",
+        status=IslandStatus.WORKING,
+        model="mistral",
+        terminal="Ghostty",
+        elapsed="28m",
+        active=True,
+    )
+    assert 'href="row:s1"' in html
+    # spaces are nbsp-encoded in HTML, so match single tokens
+    assert "Fix" in html and "bug" in html
+    assert "mistral" in html and "Ghostty" in html
+    assert "28m" in html
+
+
+def test_directory_row_truncates_long_label():
+    html = directory_row_html(
+        sid="s1",
+        label="x" * 50,
+        status=None,
+        model="",
+        terminal="",
+        elapsed=None,
+        active=False,
+    )
+    assert "…" in html
+
+
+def test_detail_nav_shows_position_and_back_to_directory():
+    html = detail_nav_html(index=0, total=3)
+    assert "1/3" in html
+    assert 'href="open_directory"' in html
 
 
 def test_preparing_state_renders_without_error():

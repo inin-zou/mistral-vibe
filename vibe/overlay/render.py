@@ -306,6 +306,60 @@ def _button(label: str, href: str, color: str) -> str:
 _BUTTON_GAP = "&nbsp;" * 4
 
 
+_STATUS_DOT: dict[IslandStatus, str] = {
+    IslandStatus.PREPARING: BLUE,
+    IslandStatus.WORKING: ORANGE,
+    IslandStatus.VERIFYING: BLUE,
+    IslandStatus.WAITING: AMBER,
+    IslandStatus.BLOCKED: RED,
+    IslandStatus.PAUSED: MUTED,
+    IslandStatus.COMPLETED: GREEN,
+}
+
+
+def _truncate(text: str, width: int) -> str:
+    return f"{text[: width - 1]}…" if len(text) > width else text
+
+
+def _row_tags(model: str, terminal: str) -> str:
+    parts = [p for p in (model, terminal) if p]
+    return " · ".join(parts)
+
+
+def directory_row_html(
+    sid: str,
+    label: str,
+    status: IslandStatus | None,
+    model: str,
+    terminal: str,
+    elapsed: str | None,
+    active: bool,
+) -> str:
+    dot_color = _STATUS_DOT.get(status, MUTED) if status is not None else MUTED
+    name_color = FG if active else "#c8c8c8"
+    tags = _row_tags(model, terminal)
+    caret = _span("▸ " if active else "  ", ORANGE)
+    row = (
+        caret
+        + _span("● ", dot_color)
+        + _span(_truncate(label, 32), name_color)
+        + _span("   ", FG)
+    )
+    if tags:
+        row += _span(tags + "  ", MUTED)
+    if elapsed:
+        row += _span(elapsed + " ", MUTED)
+    # Whole row is a click target that opens the session's detail slide.
+    return f'<a href="row:{sid}" style="text-decoration:none">{row} ›</a>'
+
+
+def detail_nav_html(index: int, total: int) -> str:
+    """Detail header: a back-to-directory button + position (i/total)."""
+    back = _button("‹ all", "open_directory", FG)
+    pos = _span(f"   {index + 1}/{total}", MUTED)
+    return back + pos
+
+
 def buttons_html(state: IslandState) -> str:
     if state.state is IslandStatus.WAITING:
         return _BUTTON_GAP.join([
